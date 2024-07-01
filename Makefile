@@ -7,8 +7,13 @@ TARGET		= ./out/sxf
 
 CXX			= g++
 CXXFLAGS	= -std=c++17 -Wall -Wextra -Wpedantic
+CXXFLAGS	+= `pkg-config libavcodec --cflags`
+CXXFLAGS	+= `pkg-config libavformat --cflags`
+CXXFLAGS	+= `pkg-config libavutil --cflags`
 LD			= $(CXX)
-LDFLAGS		= 
+LDFLAGS		= `pkg-config libavcodec --libs`
+LDFLAGS		+= `pkg-config libavformat --libs`
+LDFLAGS		+= `pkg-config libavutil --libs`
 
 CPPCHECK	= cppcheck
 CLANGXX		= clang++
@@ -29,8 +34,7 @@ check:
 	$(CPPCHECK) --language=c++ --std=c++17 ./src/main.cpp
 	$(CLANGXX) --analyze -Xclang -analyzer-output=html $(CXXFLAGS) \
 		-o ./out/analysis \
-		./src/main.cpp \
-		$(LDFLAGS)
+		./src/main.cpp
 
 sxf: $(OBJECTS)
 	$(LD) -o $(TARGET) $^ $(LDFLAGS)
