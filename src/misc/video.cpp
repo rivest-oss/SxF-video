@@ -1,7 +1,7 @@
-#ifndef __sxf__misc__mkv__cpp__
-#define __sxf__misc__mkv__cpp__
+#ifndef __sxf__misc__video__cpp__
+#define __sxf__misc__video__cpp__
 
-#include "mkv.hpp"
+#include "video.hpp"
 #include <new>
 
 extern "C" {
