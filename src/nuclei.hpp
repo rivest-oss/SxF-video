@@ -2,6 +2,7 @@
 #define __sxf__nuclei__hpp__
 
 #include <cstdint>
+#include <cstddef>
 
 namespace SxF {
 	typedef uint8_t u8;
