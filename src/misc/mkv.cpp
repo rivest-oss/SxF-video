@@ -2,72 +2,190 @@
 #define __sxf__misc__mkv__cpp__
 
 #include "mkv.hpp"
+#include <new>
 
 extern "C" {
-	#include <libavcodec/codec_id.h>
-	#include <libavcodec/codec_par.h>
-	#include <libavformat/avformat.h>
 	#include <libavcodec/avcodec.h>
-	#include <libavutil/avutil.h>
-	#include <libavutil/pixfmt.h>
+	#include <libavformat/avformat.h>
+	#include <libavutil/error.h>
+	#include <libswscale/swscale.h>
+	#include <libavutil/imgutils.h>
 };
 
 namespace SxF {
-	ErrorOr<mkv_stream_t> mkv_open_file(const char *filepath) {
-		mkv_stream_t ret = {
-			(uintptr_t)nullptr,
-			-1,
+	typedef struct _c_vsptr_t {
+		AVFormatContext	*fmt_ctx = nullptr;
+		AVStream		*str = nullptr;
+		AVCodec			*codec = nullptr;
+		AVCodecContext	*codec_ctx = nullptr;
+		AVFrame			*av_frame = nullptr;
+		AVFrame			*c_frame = nullptr;
+		SwsContext		*sws_ctx = nullptr;
+		u8				*fb = nullptr;
+	} _vsptr_t;
+
+	ErrorOr<void> VideoStream::open(const char *filepath) {
+		close();
+
+		_vsptr_t *mp;
+
+		try {
+			mp = new _vsptr_t;
+		} catch(std::bad_alloc &e) {
+			return Error { "Couldn't allocate enough memory for a video context" };
 		};
 
-		AVFormatContext *fmt_ctx = nullptr;
+		i_ptr = (uintptr_t)mp;
 
-		if(avformat_open_input(&fmt_ctx, filepath, nullptr, nullptr) < 0)
-			return Error { "Couldn't open input file" };
-
-		if(avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-			avformat_close_input(&fmt_ctx);
-			return Error {
-				"Couldn't find stream info"
-			};
+		int e = avformat_open_input(&mp->fmt_ctx, filepath, NULL, NULL);
+		if(e < 0) {
+			close();
+			
+			if(av_strerror(e, err_buff, 128) == 0)
+				return Error { err_buff };
+			
+			return Error { "Couldn't open the provided video file path" };
 		}
 
-		AVStream *stream;
-		AVCodecParameters *codec_params;
+		e = avformat_find_stream_info(mp->fmt_ctx, NULL);
+		if(e < 0) {
+			close();
+			
+			if(av_strerror(e, err_buff, 128) == 0)
+				return Error { err_buff };
+			
+			return Error { "Couldn't find a video stream" };
+		}
 
-		for(u16 i = 0; i < fmt_ctx->nb_streams; i++) {
-			stream = fmt_ctx->streams[i];
-			codec_params = stream->codecpar;
+		AVStream *str;
+		for(unsigned int i = 0; i < mp->fmt_ctx->nb_streams; i++) {
+			str = mp->fmt_ctx->streams[i];
 
-			if(
-				(codec_params->codec_type == AVMEDIA_TYPE_VIDEO) &
-				(codec_params->codec_id == AV_CODEC_ID_RAWVIDEO) &
-				(codec_params->format == AV_PIX_FMT_YUV420P)
-			) {
-				ret.stream_id = (i32)i;
+			if(avcodec_find_decoder(str->codecpar->codec_id) == NULL)
+				continue;
+			
+			if(str->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+				mp->str = str;
 				break;
 			}
 		};
-
-		if(ret.stream_id < 0) {
-			avformat_close_input(&fmt_ctx);
+		
+		if(mp->str == nullptr) {
+			close();
+			return Error { "Couldn't find a supported video stream" };
+		}
+		
+		mp->codec = avcodec_find_decoder(mp->str->codecpar->codec_id);
+		mp->codec_ctx = avcodec_alloc_context3(mp->codec);
+		
+		if(mp->codec_ctx == nullptr) {
+			close();
 			return Error {
-				"Couldn't found a supported video stream (I420)"
+				"Couldn't allocate enough memory for a video context"
 			};
 		}
-
-		ret.data_ptr = (uintptr_t)fmt_ctx;
-
-		return ret;
+		
+		e = avcodec_parameters_to_context(mp->codec_ctx, mp->str->codecpar);
+		if(e < 0) {
+			close();
+			
+			if(av_strerror(e, err_buff, 128) == 0)
+				return Error { err_buff };
+			
+			return Error { "Couldn't copy the video stream context" };
+		}
+		
+		e = avcodec_open2(mp->codec_ctx, mp->codec, nullptr);
+		if(e < 0) {
+			close();
+			
+			if(av_strerror(e, err_buff, 128) == 0)
+				return Error { err_buff };
+			
+			return Error { "Couldn't open the video context" };
+		}
+		
+		mp->av_frame = av_frame_alloc();
+		mp->c_frame = av_frame_alloc();
+		
+		if((mp->av_frame == nullptr) | (mp->c_frame == nullptr)) {
+			close();
+			
+			if(av_strerror(e, err_buff, 128) == 0)
+				return Error { err_buff };
+			
+			return Error {
+				"Couldn't allocate enough memory for a video frame context"
+			};
+		}
+		
+		// SWS_FAST_BILINEAR, SWS_BILINEAR, SWS_CUBIC, SWS_X,
+		// SWS_POINT, SWS_AREA, SWS_BICUBLIN, SWS_GAUSS, SWS_SINC,
+		// SWS_LANCZOS, SWS_SPLINE
+		
+		mp->sws_ctx = sws_getContext(	mp->codec_ctx->width,
+										mp->codec_ctx->height,
+										mp->codec_ctx->pix_fmt,
+										mp->codec_ctx->width,
+										mp->codec_ctx->height,
+										AV_PIX_FMT_RGBA,
+										SWS_BILINEAR,
+										nullptr, nullptr, nullptr);
+		
+		if(mp->sws_ctx == nullptr) {
+			close();
+			return Error { "Couldn't create the SWS context" };
+		}
+		
+		u64 fb_len = av_image_get_buffer_size(	AV_PIX_FMT_RGBA,
+												mp->codec_ctx->width,
+												mp->codec_ctx->height,
+												true);
+		
+		mp->fb = (u8 *)av_malloc(fb_len);
+		if(mp->fb == nullptr) {
+			close();
+			return Error {
+				"Couldn't allocate enough memory for the framebuffer"
+			};
+		}
+		
+		av_image_fill_arrays(	mp->c_frame->data,
+								mp->c_frame->linesize,
+								mp->fb,
+								AV_PIX_FMT_RGBA,
+								mp->codec_ctx->width,
+								mp->codec_ctx->height,
+								true);
+		
+		return Error { nullptr };
 	};
 
-	void mkv_close_file(mkv_stream_t stream) {
-		if(stream.data_ptr != (uintptr_t)nullptr) {
-			AVFormatContext *fmt_ctx = (AVFormatContext *)stream.data_ptr;
+	void VideoStream::close(void) {
+		if(i_ptr == (uintptr_t)nullptr)
+			return;
+		
+		_vsptr_t *mp = (_vsptr_t *)i_ptr;
+		
+		if(mp->fb != nullptr)
+			av_free(mp->fb);
+		if(mp->sws_ctx != nullptr)
+			sws_freeContext(mp->sws_ctx);
+		if(mp->c_frame != nullptr)
+			av_frame_free(&mp->c_frame);
+		if(mp->av_frame != nullptr)
+			av_frame_free(&mp->av_frame);
+		if(mp->codec_ctx != nullptr)
+			avcodec_free_context(&mp->codec_ctx);
+		if(mp->fmt_ctx != nullptr)
+			avformat_close_input(&mp->fmt_ctx);
+		
+		delete mp;
+		i_ptr = (uintptr_t)nullptr;
+	};
 
-			avformat_close_input(&fmt_ctx);
-
-			stream.data_ptr = (uintptr_t)nullptr;
-		}
+	ErrorOr<video_frame_t> VideoStream::get_frame(void) {
+		// [TODO]
 	};
 };
 

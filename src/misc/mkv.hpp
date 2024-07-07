@@ -6,12 +6,23 @@
 
 namespace SxF {
 	typedef struct {
-		uintptr_t	data_ptr;
-		i32			stream_id;
-	} mkv_stream_t;
+		u32	width;
+		u32	height;
+		f32	time;
+		u8	*data;
+	} video_frame_t;
 
-	ErrorOr<mkv_stream_t> mkv_open_file(const char *filepath);
-	void mkv_close_file(mkv_stream_t stream);
+	class VideoStream {
+		private:
+			uintptr_t i_ptr = (uintptr_t)NULL;
+			char err_buff[128];
+
+		public:
+			ErrorOr<void> open(const char *filepath);
+			void close(void);
+
+			ErrorOr<video_frame_t> get_frame(void);
+	};
 };
 
 #endif
