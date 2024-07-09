@@ -6,10 +6,10 @@
 
 namespace SxF {
 	typedef struct {
-		u32	width;
-		u32	height;
-		f32	time;
-		u8	*data;
+		unsigned int	width;
+		unsigned int	height;
+		f32				time;
+		u8				*data;
 	} video_frame_t;
 
 	class VideoStream {

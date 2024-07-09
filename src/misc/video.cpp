@@ -185,7 +185,52 @@ namespace SxF {
 	};
 
 	ErrorOr<video_frame_t> VideoStream::get_frame(void) {
-		// [TODO]
+		if(i_ptr == (uintptr_t)nullptr)
+			return Error { "Video stream not available" };
+		
+		_vsptr_t *mp = (_vsptr_t *)i_ptr;
+		
+		int e;
+		AVPacket packet;
+		
+		while((e = av_read_frame(mp->fmt_ctx, &packet)) >= 0) {
+			if(packet.stream_index == mp->str->index) {
+				e = avcodec_send_packet(mp->codec_ctx, &packet);
+				if(e < 0) {
+					close();
+					
+					if(av_strerror(e, err_buff, 128) == 0)
+						return Error { err_buff };
+					
+					return Error { "Couldn't send a frame request" };
+				}
+				
+				while((e = avcodec_receive_frame(mp->codec_ctx, mp->av_frame)) == 0) {
+					av_packet_unref(&packet);
+					
+					sws_scale(	mp->sws_ctx,
+								mp->av_frame->data,
+								mp->av_frame->linesize,
+								0,
+								mp->codec_ctx->height,
+								mp->c_frame->data,
+								mp->c_frame->linesize);
+					
+					i64 pts = mp->av_frame->pts;
+					
+					return video_frame_t {
+						(unsigned int)(mp->av_frame->width),
+						(unsigned int)(mp->av_frame->height),
+						(float)pts, // [TODO]
+						mp->fb,
+					};
+				};
+			}
+			
+			av_packet_unref(&packet);
+		};
+		
+		return Error { "[TODO] while-out-process" };
 	};
 };
 
